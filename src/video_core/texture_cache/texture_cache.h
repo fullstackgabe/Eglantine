@@ -376,7 +376,11 @@ void TextureCache<P>::TickFrame() {
     }
     // Every 600 frames: device memory in use against the collector's thresholds, and what the
     // images themselves account for (VRAM pressure makes the collector thrash).
-    if (static u64 frames{}; ++frames % 600 == 0) {
+    static const u64 stats_frames = [] {
+        const char* env = std::getenv("EGL_STATS_FRAMES");
+        return env ? (std::max)(u64{1}, std::strtoull(env, nullptr, 10)) : u64{600};
+    }();
+    if (static u64 frames{}; ++frames % stats_frames == 0) {
         u64 image_bytes{};
         size_t images{};
         std::vector<std::pair<u64, const Image*>> largest;

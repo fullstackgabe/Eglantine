@@ -14,6 +14,9 @@
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
+#ifdef __APPLE__
+#include <mach/mach.h>
+#endif
 
 #include "common/logging.h"
 #include "common/scm_rev.h"
@@ -39,6 +42,17 @@ EmuWindow_SDL3::EmuWindow_SDL3(InputCommon::InputSubsystem* input_subsystem_, Co
         auto* this_ = (EmuWindow_SDL3*)userdata;
         auto const results = this_->system.GetAndResetPerfStats();
         auto* const title = new std::string(fmt::format("{} | {}-{} | FPS: {:.0f} ({:.0f}%)", Common::g_build_fullname, Common::g_scm_branch, Common::g_scm_desc, results.average_game_fps, results.emulation_speed * 100.0f));
+        if (std::getenv("EGL_PERF_LOG")) {
+            u64 footprint_mib = 0;
+#ifdef __APPLE__
+            task_vm_info_data_t vm_info{};
+            mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+            if (task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&vm_info), &count) == KERN_SUCCESS) {
+                footprint_mib = vm_info.phys_footprint >> 20;
+            }
+#endif
+            LOG_INFO(Frontend, "perf fps={:.1f} ft={:.1f} speed={:.0f}% footprint={}MiB", results.average_game_fps, results.frametime * 1000.0, results.emulation_speed * 100.0, footprint_mib);
+        }
         // Timers run on their own thread and AppKit throws when a title is set off the main
         // thread: ApplyPendingTitle sets it from the main loop.
         delete this_->pending_title.exchange(title);

@@ -318,6 +318,13 @@ vk::Image MemoryAllocator::CreateUnbackedImage(const VkImageCreateInfo &ci, bool
                                                  &sparse) != VK_SUCCESS) {
         return vk::Image{};
     }
+    if (std::getenv("EGL_SPARSE_DEBUG")) {
+        VkMemoryRequirements req{};
+        device.GetDispatchLoader().vkGetImageMemoryRequirements(*device.GetLogical(), sparse, &req);
+        LOG_WARNING(Render_Vulkan, "EGL sparse: binding={} residency2D={} aliased={} req.size={} MiB",
+                    device.IsSparseBindingSupported(), device.IsSparseResidencyImage2DSupported(),
+                    device.IsSparseResidencyAliasedSupported(), req.size >> 20);
+    }
     return vk::Image(sparse, ci.usage, *device.GetLogical(), allocator, VK_NULL_HANDLE,
                      device.GetDispatchLoader());
 }
