@@ -351,8 +351,42 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
 // over 1 GiB as RGBA8 (title 1's 8192x8192x68 ASTC 8x8 virtual textures are 24 GB each) keeps only
 // its mip levels from `level_offset` on, so host mip 0 is guest mip `level_offset`. Normalized
 // coordinates and derivative LOD still address it correctly; explicit LODs sample one level lower.
+// A 2D image too large to back (MemoryAllocator::CreateImage's limit) on a device without sparse
+// binding. Elsewhere it would be an unbacked sparse image; MoltenVK ignores the sparse flags and
+// allocates all of it (title 1's three 8192x8192x68 arrays: 8.7 GB, on 16 GB Macs too).
+[[nodiscard]] bool IsHugeWithoutSparse(const Device& device, const ImageInfo& info) {
+    if (device.IsSparseBindingSupported() || info.type != ImageType::e2D ||
+        WillUseAcceleratedAstcDecode(device, info)) {
+        return false;
+    }
+    const u64 texels = u64{info.size.width} * info.size.height * info.size.depth *
+                       static_cast<u64>(info.resources.layers);
+    return texels > (u64{1} << 28);
+}
+
 [[nodiscard]] ImageInfo TrimmedHostInfo(const Device& device, const ImageInfo& info, u32& level_offset) {
     level_offset = 0;
+    if (IsHugeWithoutSparse(device, info)) {
+        // Unbacked images get no uploads, so only the shape matters: keep the smallest levels.
+        const auto texels = [&](u32 skip) {
+            return u64{(std::max)(info.size.width >> skip, 1U)} *
+                   (std::max)(info.size.height >> skip, 1U) *
+                   static_cast<u64>(info.resources.layers);
+        };
+        while (level_offset + 1 < static_cast<u32>(info.resources.levels) &&
+               texels(level_offset) > (u64{1} << 24)) {
+            ++level_offset;
+        }
+        ImageInfo host = info;
+        host.size.width = (std::max)(info.size.width >> level_offset, 1U);
+        host.size.height = (std::max)(info.size.height >> level_offset, 1U);
+        host.resources.levels -= static_cast<s32>(level_offset);
+        LOG_WARNING(Render_Vulkan, "{}x{}x{} image is too large to back and the device has no "
+                    "sparse binding; placeholder keeps mip levels {}+ ({}x{})",
+                    info.size.width, info.size.height, info.resources.layers, level_offset,
+                    host.size.width, host.size.height);
+        return host;
+    }
     if (!WillUseAcceleratedAstcDecode(device, info) || info.type != ImageType::e2D) {
         return info;
     }
@@ -440,7 +474,8 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
 [[nodiscard]] vk::Image MakeImage(const Device& device, const MemoryAllocator& allocator,
                                   const ImageInfo& info, std::span<const VkFormat> view_formats,
                                   std::optional<VkFormat> format_override = {},
-                                  bool unbacked = false, bool aliased = false) {
+                                  bool unbacked = false, bool aliased = false,
+                                  bool dedicated = false) {
     if (info.type == ImageType::Buffer) {
         return vk::Image{};
     }
@@ -473,7 +508,7 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
             return image;
         }
     }
-    return allocator.CreateImage(image_ci);
+    return allocator.CreateImage(image_ci, dedicated);
 }
 
 [[nodiscard]] vk::ImageView MakeStorageView(const vk::Device& device, u32 level, VkImage image,
@@ -2513,7 +2548,7 @@ namespace {
 
 // The host image of a texture; unbacked images are created without memory (see MakeImage).
 [[nodiscard]] vk::Image MakeHostImage(TextureCacheRuntime& runtime, const ImageInfo& info,
-                                      u32 host_level_offset, GPUVAddr gpu_addr, bool backed) {
+                                      u32& host_level_offset, GPUVAddr gpu_addr, bool backed) {
     const Device& device = runtime.device;
     const bool sparse_tiles = !backed && UsesSparseTiles(device, info, gpu_addr);
     return MakeImage(
@@ -2524,7 +2559,10 @@ namespace {
         AstcHostFormat(device, info),
         !backed && (UsesSparseLayers(device, info, gpu_addr) || sparse_tiles ||
                     IsUnwrittenSparse(device, info, gpu_addr)),
-        sparse_tiles && SparseTilesModeOf(device) == SparseTilesMode::Aliased);
+        sparse_tiles && SparseTilesModeOf(device) == SparseTilesMode::Aliased,
+        // Its own allocation: fresh, zeroed memory, as the full-size image had, not a reused
+        // block of an earlier image (compressed formats cannot be cleared).
+        IsHugeWithoutSparse(device, info));
 }
 
 } // Anonymous namespace
@@ -2560,6 +2598,9 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
             // was written there yet, so the first write gets it replaced.
             flags |= VideoCommon::ImageFlagBits::UnwrittenSparse;
         }
+    } else if (IsHugeWithoutSparse(runtime_.device, info)) {
+        // A small backed placeholder: treated as unbacked, as the sparse image would have been.
+        flags |= VideoCommon::ImageFlagBits::Unbacked;
     }
     if (host_level_offset != 0) {
         flags |= VideoCommon::ImageFlagBits::TrimmedLevels;

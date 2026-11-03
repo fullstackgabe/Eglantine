@@ -359,6 +359,11 @@ public:
         if (forced == '0' || forced == '1') {
             return forced == '1';
         }
+        // Without sparse binding (MoltenVK) the driver ignores the sparse flags and backs the
+        // whole image, which the texture cache would then count as zero bytes.
+        if (!IsSparseBindingSupported()) {
+            return false;
+        }
         const VkDriverIdKHR id = GetDriverID();
         return id != VK_DRIVER_ID_AMD_PROPRIETARY && id != VK_DRIVER_ID_AMD_OPEN_SOURCE &&
                id != VK_DRIVER_ID_MESA_RADV;
