@@ -8,6 +8,8 @@
 
 #include "dynarmic/backend/arm64/emit_arm64.h"
 
+#include <algorithm>
+
 #include <oaknut/oaknut.hpp>
 
 #include "dynarmic/backend/arm64/abi.h"
@@ -273,7 +275,12 @@ void EmitRelocation(oaknut::CodeGenerator& code, EmitContext& ctx, LinkTarget li
 }
 
 void EmitBlockLinkRelocation(oaknut::CodeGenerator& code, EmitContext& ctx, const IR::LocationDescriptor& descriptor, BlockRelocationType type) {
-    ctx.ebi.block_relocations[descriptor].emplace_back(BlockRelocation{code.xptr<CodePtr>() - ctx.ebi.entry_point, type});
+    auto& links = ctx.ebi.block_relocations;
+    auto it = std::find_if(links.begin(), links.end(), [&](const auto& link) { return link.first == descriptor; });
+    if (it == links.end()) {
+        it = links.emplace(links.end(), descriptor, std::vector<BlockRelocation>{});
+    }
+    it->second.emplace_back(BlockRelocation{code.xptr<CodePtr>() - ctx.ebi.entry_point, type});
     switch (type) {
     case BlockRelocationType::Branch:
         code.NOP();

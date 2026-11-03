@@ -11,6 +11,7 @@
 #include <array>
 #include <cstddef>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "common/common_types.h"
@@ -104,8 +105,10 @@ struct BlockRelocation {
 struct EmittedBlockInfo {
     CodePtr entry_point;
     std::size_t size;
-    std::vector<Relocation> relocations;
-    ::Common::unordered_map<IR::LocationDescriptor, std::vector<BlockRelocation>> block_relocations;
+    std::vector<Relocation> relocations;  ///< Only read by AddressSpace::Link, then released
+    // A block links to one or two others: a list is far smaller than a hash table per block
+    // (about 1 KiB each, ~1 GiB over a long session without fastmem).
+    std::vector<std::pair<IR::LocationDescriptor, std::vector<BlockRelocation>>> block_relocations;
     ::Common::unordered_map<std::ptrdiff_t, FastmemPatchInfo> fastmem_patch_info;
 };
 
