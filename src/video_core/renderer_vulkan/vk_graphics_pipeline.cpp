@@ -327,6 +327,17 @@ GraphicsPipeline::GraphicsPipeline(
     auto func{[this, shader_notify, &render_pass_cache, pipeline_statistics] {
         const VkRenderPass render_pass{render_pass_cache.Get(MakeRenderPassKey(key.state, device))};
         Validate();
+        // Without VK_EXT_mesh_shader the rasterizer skips task/mesh draws, so leave the pipeline
+        // null: creating it anyway is invalid usage, and MoltenVK crashes on the null vertex input.
+        if (IsMeshPipeline() && !device.IsExtMeshShaderSupported()) {
+            std::scoped_lock lock{build_mutex};
+            is_built = true;
+            build_condvar.notify_one();
+            if (shader_notify) {
+                shader_notify->MarkShaderComplete();
+            }
+            return;
+        }
         try {
             MakePipeline(render_pass);
         } catch (const vk::Exception& exception) {
